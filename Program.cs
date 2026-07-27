@@ -21,6 +21,11 @@
     {
         public string SampleId { get; set; }
         public string Barcode { get; set; }
+        public TestResult[] TestResults { get; set; }
+    }
+
+    internal class TestResult
+    {
         public string TestName { get; set; }
         public string Result { get; set; }
         public string Unit { get; set; }
@@ -41,6 +46,47 @@
         
         const byte VT = 0x0B;
         const byte FS = 0x1C;
+
+        private static readonly string[] TestNames =
+        [
+            "WBC",
+            "RBC",
+            "HGB",
+            "PLT",
+            "MCHC",
+            "ALT",
+            "AST",
+            "TP",
+            "ALB",
+            "BIL-T",
+            "CREA",
+            "BUN",
+            "K",
+            "Na",
+            "IgA",
+            "TSH",
+            "FT4",
+            "CA125",
+            "PSA",
+            "CRP"
+        ];
+
+        private static readonly string[] Units =
+        [
+            "g/l",
+            "g/dL",
+            "mg/dL",
+            "mg/l",
+            "pg/mL",
+            "mol/l",
+            "mmol/l",
+            "umol/l",
+            "cells/uL",
+            "10^6/uL",
+            "10^3/uL",
+            "U/l",
+            "%"
+        ];
 
         private static readonly Settings Settings = new Settings();
         private static readonly Random Rnd = new Random();
@@ -115,9 +161,15 @@
                 var sample = new Sample
                 {
                     SampleId = $"{DateTime.Now:yyyyMMdd}{Rnd.Next(9999):000000}",
-                    TestName = "Glucose",
-                    Result = $"{Rnd.Next(200000)/1000.0}",
-                    Unit = "mmol/L"
+                    TestResults =
+                    [
+                        new TestResult()
+                        {
+                            TestName = $"{TestNames[Rnd.Next(TestNames.Length)]}",
+                            Result = $"{Rnd.Next(200000)/1000.0}",
+                            Unit = $"{Units[Rnd.Next(Units.Length)]}"
+                        }
+                    ]
                 };
 
                 var payload = FormatData(sample);
@@ -137,18 +189,19 @@
 
         private static string FormatData(Sample sample)
         {
+            var testResult = sample.TestResults.First();
             switch (Settings.Protocol)
             {
                 case ProtocolType.HL7:
                     return $"MSH|^~\\&|AnalyzerEmulator|LAB|LIS|HOSP|{DateTime.Now:yyyyMMddHHmmss}||ORU^R01|{Rnd.Next(1000)}|P|2.3.1\r" +
                            $"PID|1||{Rnd.Next(1000000)}||Test^Patient\r" +
                            $"OBR|1|{sample.SampleId}||\r" +
-                           $"OBX|1|NM|{sample.TestName}||{sample.Result}|{sample.Unit}||||F\r";
+                           $"OBX|1|NM|{testResult.TestName}||{testResult.Result}|{testResult.Unit}||||F\r";
                 case ProtocolType.ASTM:
                     return $"H|\\^&|||AnalyzerEmulator\r" +
                            $"P|1||\r" +
                            $"O|1|{sample.SampleId}|\r" +
-                           $"R|1|{sample.TestName}|{sample.Result}|{sample.Unit}\r" +
+                           $"R|1|{testResult.TestName}|{testResult.Result}|{testResult.Unit}\r" +
                            $"L|1|N\r";
                 case ProtocolType.JSON:
                     return JsonSerializer.Serialize(sample);
