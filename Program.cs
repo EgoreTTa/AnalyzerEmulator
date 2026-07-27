@@ -160,7 +160,8 @@
             {
                 var sample = new Sample
                 {
-                    SampleId = $"{DateTime.Now:yyyyMMdd}{Rnd.Next(9999):000000}",
+                    SampleId = $"{Rnd.Next(9999)}",
+                    Barcode = $"{DateTime.Now:yyyyMMdd}{Rnd.Next(9999):000000}",
                     TestResults =
                     [
                         new TestResult()
@@ -178,8 +179,8 @@
                 try { ok = SendData(payload); }
                 catch (Exception exception) { }
 
-                Console.WriteLine(ok ? $"[OK] Образец {sample.SampleId} отправлен."
-                                     : $"[FAIL] Образец {sample.SampleId} — ошибка передачи.");
+                Console.WriteLine(ok ? $"[OK] Образец ID:{sample.SampleId} Barcode:{sample.Barcode} отправлен."
+                                     : $"[FAIL] Образец ID:{sample.SampleId} — ошибка передачи.");
                 System.Threading.Thread.Sleep(500);
             }
 
@@ -225,11 +226,55 @@
                 case ConnectionType.COM:
                     using (var port = new SerialPort(Settings.Target, 9600, Parity.None, 8, StopBits.One))
                     {
+                        port.WriteTimeout = Settings.TimeoutMs;
+                        port.ReadTimeout = Settings.TimeoutMs;
+                        byte[] bytes;
+                        byte[] buffer;
                         port.Open();
-                        var bytes = Settings.Protocol == ProtocolType.ASTM
-                            ? BuildAstmFrame(data)
-                            : Encoding.UTF8.GetBytes(data);
-                        port.Write(bytes, 0, bytes.Length);
+                        switch (Settings.Protocol)
+                        {
+                            case ProtocolType.HL7:
+                                var message = new List<byte>();
+                                message.Add(VT);
+                                message.AddRange(Encoding.UTF8.GetBytes(data));
+                                message.Add(FS);
+                                message.Add(CR);
+
+                                bytes = message.ToArray();
+                                port.Write(bytes, 0, bytes.Length);
+
+                                buffer = new byte[1024];
+                                port.Read(buffer, 0, buffer.Length);
+
+                                var ack = Encoding.UTF8.GetString(buffer.Where(x => x > 0).ToArray());
+                                var isAck = ack.Contains("MSA|AA");
+                                Console.WriteLine(isAck ? "[HL7 ACK]" : $"[HL7 NAK] {ack[..Math.Min(80, ack.Length)]}");
+
+                                break;
+                            case ProtocolType.ASTM:
+                                port.Write([ENQ], 0, 1);
+                                buffer = new byte[1];
+                                port.Read(buffer, 0, 1);
+                                if (buffer.First() == ACK)
+                                {
+                                    bytes = BuildAstmFrame(data);
+                                    port.Write(bytes, 0, bytes.Length);
+                                }
+                                else
+                                {
+                                    Console.WriteLine("[TIMEOUT] ACK не получен после ENQ. Отправка EOT.");
+                                    port.Write([EOT], 0, 1);
+                                    break;
+                                }
+
+                                if (buffer.First() == ACK)
+                                    port.Write([EOT], 0, 1);
+                                else
+                                    Console.WriteLine("[TIMEOUT] ACK не получен после передачи данных.");
+                                break;
+                            case ProtocolType.JSON:
+                                break;
+                        }
                     }
                     return true;
 
@@ -325,16 +370,14 @@
 
             using var stream = client.GetStream();
 
-            // 1. Handshake: ENQ -> ждем ACK
             stream.WriteByte(ENQ);
             if (!WaitForAck(stream))
             {
-                stream.WriteByte(EOT); // сигнализируем об отбое
+                stream.WriteByte(EOT);
                 Console.WriteLine("[TIMEOUT] ACK не получен после ENQ. Отправка EOT.");
                 return false;
             }
 
-            // 2. Отправляем тело ASTM с STX/ETX и checksum
             var frame = BuildAstmFrame(frameData);
             stream.Write(frame, 0, frame.Length);
 
