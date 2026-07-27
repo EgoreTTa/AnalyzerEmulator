@@ -158,19 +158,23 @@
             Console.WriteLine("\n--- Генерация и отправка образцов ---");
             for (var i = 1; i <= 3; i++)
             {
+                var results = new List<TestResult>();
+
+                for (var j = 0; j <= Rnd.Next(TestNames.Length); j++)
+                {
+                    results.Add(new TestResult()
+                    {
+                        TestName = $"{TestNames[j]}",
+                        Result = $"{Rnd.Next(200000) / 1000.0}",
+                        Unit = $"{Units[Rnd.Next(Units.Length)]}"
+                    });
+                }
+
                 var sample = new Sample
                 {
                     SampleId = $"{Rnd.Next(9999)}",
                     Barcode = $"{DateTime.Now:yyyyMMdd}{Rnd.Next(9999):000000}",
-                    TestResults =
-                    [
-                        new TestResult()
-                        {
-                            TestName = $"{TestNames[Rnd.Next(TestNames.Length)]}",
-                            Result = $"{Rnd.Next(200000)/1000.0}",
-                            Unit = $"{Units[Rnd.Next(Units.Length)]}"
-                        }
-                    ]
+                    TestResults = results.ToArray()
                 };
 
                 var payload = FormatData(sample);
@@ -190,19 +194,27 @@
 
         private static string FormatData(Sample sample)
         {
-            var testResult = sample.TestResults.First();
             switch (Settings.Protocol)
             {
                 case ProtocolType.HL7:
+                    var obxs = new List<string>();
+
+                    for (var i = 0; i < sample.TestResults.Length; i++)
+                        obxs.Add($"OBX|{i + 1}|NM|{sample.TestResults[i].TestName}||{sample.TestResults[i].Result}|{sample.TestResults[i].Unit}||||F\r");
+
                     return $"MSH|^~\\&|AnalyzerEmulator|LAB|LIS|HOSP|{DateTime.Now:yyyyMMddHHmmss}||ORU^R01|{Rnd.Next(1000)}|P|2.3.1\r" +
                            $"PID|1||{Rnd.Next(1000000)}||Test^Patient\r" +
-                           $"OBR|1|{sample.SampleId}||\r" +
-                           $"OBX|1|NM|{testResult.TestName}||{testResult.Result}|{testResult.Unit}||||F\r";
+                           $"OBR|1|{sample.SampleId}|{sample.Barcode}|\r" +
+                           string.Concat(obxs);
                 case ProtocolType.ASTM:
+                    var results = new List<string>();
+                    for (var i = 0; i < sample.TestResults.Length; i++)
+                        results.Add($"R|{i + 1}|{sample.TestResults[i].TestName}|{sample.TestResults[i].Result}|{sample.TestResults[i].Unit}\r");
+
                     return $"H|\\^&|||AnalyzerEmulator\r" +
                            $"P|1||\r" +
-                           $"O|1|{sample.SampleId}|\r" +
-                           $"R|1|{testResult.TestName}|{testResult.Result}|{testResult.Unit}\r" +
+                           $"O|1|{sample.SampleId}|{sample.Barcode}\r" +
+                           string.Concat(results) +
                            $"L|1|N\r";
                 case ProtocolType.JSON:
                     return JsonSerializer.Serialize(sample);
