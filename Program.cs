@@ -11,13 +11,10 @@
 
     internal class Settings
     {
-        //for the king dovakin
         public ConnectionType Connection { get; set; } = ConnectionType.Network;
         public ProtocolType Protocol { get; set; } = ProtocolType.ASTM;
         public string Target { get; set; } = "127.0.0.1:8080";
-
-        public int TimeoutMs { get; set; } = 5000;
-        public int TimeoutMs { get; set; } = 5000; 
+        public int TimeoutMs { get; set; } = 5000; //салам салам
     }
 
     internal class Sample
