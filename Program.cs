@@ -103,20 +103,52 @@
                 Console.Clear();
                 Console.WriteLine($"[Настройки: {Settings.Connection} | {Settings.Protocol} | {Settings.Target} | TO:{Settings.TimeoutMs}ms]\n");
                 Console.WriteLine("1. Симуляция (отправить 3 образца)");
-                Console.WriteLine("2. Настройки");
-                Console.WriteLine("3. Выход");
+                Console.WriteLine("2. Симуляция (отправить запрос образца)");
+                Console.WriteLine("3. Настройки");
+                Console.WriteLine("\n0. Выход");
                 Console.Write("\nВыбор: ");
 
                 switch (Console.ReadLine())
                 {
                     case "1": RunSimulation(); break;
-                    case "2": ConfigureSettings(); break;
-                    case "3": return;
+                    case "2": RunSimulationOrder(); break;
+                    case "3": ViewSettingsMenu(); break;
+                    case "0": return;
                 }
             }
         }
 
-        private static void ConfigureSettings()
+        private static void RunSimulationOrder()
+        {
+            Console.WriteLine("\n--- Генерация и отправка запроса ---");
+            
+            var sample = new Sample
+            {
+                SampleId = $"{Rnd.Next(9999)}",
+                Barcode = $"{DateTime.Now:yyyyMMdd}{Rnd.Next(9999):000000}",
+            };
+
+            var payload = FormatData(sample);
+
+            var ok = false;
+            try
+            {
+                ok = SendOrder(payload);
+            }
+            catch (Exception exception)
+            {
+                Console.WriteLine($"[DEBUG] {exception.Message}");
+            }
+
+            Console.WriteLine(ok ? $"[OK] Образец ID:{sample.SampleId} Barcode:{sample.Barcode} отправлен."
+                : $"[FAIL] Образец ID:{sample.SampleId} — ошибка передачи.");
+            Thread.Sleep(500);
+
+            Console.WriteLine("\nНажмите любую клавишу для возврата в меню...");
+            Console.ReadKey();
+        }
+
+        private static void ViewSettingsMenu()
         {
             while (true)
             {
@@ -126,7 +158,7 @@
                 Console.WriteLine("2. Протокол (HL7, ASTM, JSON)");
                 Console.WriteLine("3. Целевой адрес (IP:Port / COMx / Путь)");
                 Console.WriteLine("4. Таймаут ответа (мс)");
-                Console.WriteLine("0. Назад");
+                Console.WriteLine("\n0. Назад");
                 Console.Write("\nВыбор: ");
 
                 switch (Console.ReadLine())
@@ -180,16 +212,117 @@
                 var payload = FormatData(sample);
 
                 var ok = false;
-                try { ok = SendData(payload); }
-                catch (Exception exception) { }
+                try
+                {
+                    ok = SendData(payload);
+                }
+                catch (Exception exception)
+                {
+                    Console.WriteLine($"[DEBUG] {exception.Message}");
+                }
 
                 Console.WriteLine(ok ? $"[OK] Образец ID:{sample.SampleId} Barcode:{sample.Barcode} отправлен."
                                      : $"[FAIL] Образец ID:{sample.SampleId} — ошибка передачи.");
-                System.Threading.Thread.Sleep(500);
+                Thread.Sleep(500);
             }
 
             Console.WriteLine("\nНажмите любую клавишу для возврата в меню...");
             Console.ReadKey();
+        }
+
+        private static bool SendOrder(string data)
+        {
+            switch (Settings.Connection)
+            {
+                case ConnectionType.Network:
+                    return Settings.Protocol switch
+                    {
+                        ProtocolType.ASTM => SendASTMOrderOverNetwork(data),
+                        ProtocolType.HL7 => throw new NotImplementedException(),
+                        _ => throw new NotImplementedException(),
+                    };
+
+                case ConnectionType.COM:
+                    using (var port = new SerialPort(Settings.Target, 9600, Parity.None, 8, StopBits.One))
+                    {
+                        port.WriteTimeout = Settings.TimeoutMs;
+                        port.ReadTimeout = Settings.TimeoutMs;
+                        byte[] bytes;
+                        byte[] buffer;
+                        port.Open();
+                        switch (Settings.Protocol)
+                        {
+                            case ProtocolType.HL7:
+                                throw new NotImplementedException();
+                            case ProtocolType.ASTM:
+                                port.Write([ENQ], 0, 1);
+                                buffer = new byte[1];
+                                port.Read(buffer, 0, 1);
+                                if (buffer.First() == ACK)
+                                {
+                                    bytes = BuildAstmFrame(data);
+                                    port.Write(bytes, 0, bytes.Length);
+                                }
+                                else
+                                {
+                                    Console.WriteLine("[TIMEOUT] ACK не получен после ENQ при запросе. Отправка EOT.");
+                                    port.Write([EOT], 0, 1);
+                                    break;
+                                }
+
+                                port.Read(buffer, 0, 1);
+                                if (buffer.First() != ACK)
+                                {
+                                    Console.WriteLine("[TIMEOUT] ACK не получен после передачи запроса.");
+                                    return false;
+                                }
+
+                                port.Write([EOT], 0, 1);
+
+                                port.Read(buffer, 0, 1);
+                                if (buffer.First() != ENQ)
+                                {
+                                    Console.WriteLine("[TIMEOUT] ENQ не получен после инициализации ответа.");
+                                    return false;
+                                }
+
+                                port.Write([ACK], 0, 1);
+
+                                port.BaseStream.Read(buffer);
+                                buffer = buffer.Where(b => b > 0).ToArray();
+                                if (buffer.First() != STX
+                                    ||
+                                    buffer.SkipLast(4).Last() != ETX
+                                    ||
+                                    buffer.SkipLast(1).Last() != CR
+                                    ||
+                                    buffer.Last() != LF)
+                                {
+                                    Console.WriteLine("[ERROR] Ошибка обработки сообщения.");
+                                    return false;
+                                }
+
+                                port.Write([ACK], 0, 1);
+                                port.BaseStream.Read(buffer, 0, 1);
+                                if (buffer.First() != EOT)
+                                {
+                                    Console.WriteLine("[ERROR] Не был получен конец передачи заказа.");
+                                    return false;
+                                }
+                                return true;
+                            case ProtocolType.JSON:
+                                throw new NotImplementedException();
+                        }
+                    }
+
+                    return true;
+
+                case ConnectionType.File:
+                    throw new NotImplementedException();
+
+                default:
+                    return false;
+            }
         }
 
         private static string FormatData(Sample sample)
@@ -207,15 +340,25 @@
                            $"OBR|1|{sample.SampleId}|{sample.Barcode}|\r" +
                            string.Concat(obxs);
                 case ProtocolType.ASTM:
-                    var results = new List<string>();
-                    for (var i = 0; i < sample.TestResults.Length; i++)
-                        results.Add($"R|{i + 1}|{sample.TestResults[i].TestName}|{sample.TestResults[i].Result}|{sample.TestResults[i].Unit}\r");
+                    if (sample.TestResults != null)
+                    {
+                        var results = new List<string>();
+                        for (var i = 0; i < sample.TestResults.Length; i++)
+                            results.Add($"R|{i + 1}|{sample.TestResults[i].TestName}|{sample.TestResults[i].Result}|{sample.TestResults[i].Unit}\r");
 
-                    return $"H|\\^&|||AnalyzerEmulator\r" +
-                           $"P|1||\r" +
-                           $"O|1|{sample.SampleId}|{sample.Barcode}\r" +
-                           string.Concat(results) +
-                           $"L|1|N\r";
+                        return $"H|\\^&|||AnalyzerEmulator\r" +
+                               $"P|1||\r" +
+                               $"O|1|{sample.SampleId}|{sample.Barcode}\r" +
+                               string.Concat(results) +
+                               $"L|1|N\r";
+                    }
+                    else
+                    {
+                        return $"H|\\^&|||AnalyzerEmulator\r" +
+                               $"Q|1|{sample.SampleId}|{sample.Barcode}\r" +
+                               $"L|1|N\r";
+                    }
+                    break;
                 case ProtocolType.JSON:
                     return JsonSerializer.Serialize(sample);
                 default:
@@ -265,21 +408,22 @@
                                 break;
                             case ProtocolType.ASTM:
                                 port.Write([ENQ], 0, 1);
-                                buffer = new byte[1];
-                                port.Read(buffer, 0, 1);
-                                if (buffer.First() == ACK)
+                                var nextByte = (byte)port.ReadByte();
+                                if (nextByte == ACK)
                                 {
                                     bytes = BuildAstmFrame(data);
                                     port.Write(bytes, 0, bytes.Length);
                                 }
                                 else
                                 {
+                                    Console.WriteLine($"[DEBUG] {nextByte:x8}");
                                     Console.WriteLine("[TIMEOUT] ACK не получен после ENQ. Отправка EOT.");
                                     port.Write([EOT], 0, 1);
                                     break;
                                 }
 
-                                if (buffer.First() == ACK)
+                                nextByte = (byte)port.ReadByte();
+                                if (nextByte == ACK)
                                     port.Write([EOT], 0, 1);
                                 else
                                     Console.WriteLine("[TIMEOUT] ACK не получен после передачи данных.");
@@ -331,7 +475,8 @@
             try
             {
                 var ackBuf = new byte[1024];
-                var read = stream.Read(ackBuf, 0, ackBuf.Length);
+                var read = stream.Read(ackBuf);
+
                 ackBuf = ackBuf.Where(x => x > 0).ToArray();
                 if (read > 3 && ackBuf[0] == VT && ackBuf.SkipLast(1).Last() == FS)
                 {
@@ -406,6 +551,93 @@
             return true;
         }
 
+        private static bool SendASTMOrderOverNetwork(string frameData)
+        {
+            var parts = Settings.Target.Split(':');
+            using var client = new Socket(AddressFamily.InterNetwork, SocketType.Stream, System.Net.Sockets.ProtocolType.Tcp);
+            client.SendTimeout = Settings.TimeoutMs;
+            client.ReceiveTimeout = Settings.TimeoutMs;
+
+            try
+            {
+                client.Connect(parts[0], int.Parse(parts[1]));
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[HOST UNREACHABLE] {ex.Message}");
+                return false;
+            }
+
+            var buffer = new byte[1024];
+
+            client.Send([ENQ]);
+            var countBytes = client.Receive(buffer);
+            Console.WriteLine($"[DEBUG] байтов получено : {countBytes}");
+            if (buffer.First() != ACK)
+            {
+                client.Send([EOT]);
+                Console.WriteLine("[TIMEOUT] ACK не получен после ENQ. Отправка EOT.");
+                return false;
+            }
+
+            var frame = BuildAstmFrame(frameData);
+            client.Send(frame);
+            client.Receive(buffer);
+            if (buffer.First() != ACK)
+            {
+                client.Send([EOT]);
+                Console.WriteLine("[TIMEOUT] ACK не получен после передачи данных.");
+                return false;
+            }
+
+            client.Send([EOT]);
+
+            client.Receive(buffer);
+            if (buffer.First() != ENQ)
+            {
+                Console.WriteLine("[TIMEOUT] ENQ не получен после инициализации ответа.");
+
+                return false;
+            }
+
+            client.Send([ACK]);
+
+            buffer = new byte[1024];
+            countBytes = client.Receive(buffer);
+            Console.WriteLine($"[DEBUG] байтов получено : {countBytes}");
+
+            while (countBytes == 0)
+            {
+                countBytes = client.Receive(buffer);
+                Console.WriteLine($"[DEBUG] байтов получено : {countBytes}");
+            }
+
+            buffer = buffer.Where(x => x > 0).ToArray();
+            Console.WriteLine($"[DEBUG] {Encoding.ASCII.GetString(buffer)}");
+            if (buffer.First() != STX
+                ||
+                buffer.SkipLast(4).Last() != ETX
+                ||
+                buffer.SkipLast(1).Last() != CR
+                ||
+                buffer.Last() != LF)
+            {
+                Console.WriteLine("[ERROR] Ошибка обработки сообщения.");
+                return false;
+            }
+
+            client.Send([ACK]);
+
+            client.Receive(buffer);
+            if (buffer.First() != EOT)
+            {
+                Console.WriteLine("[ERROR] Не был получен EOT после приема заказа.");
+                return false;
+            }
+
+            return true;
+        }
+        
         private static bool WaitForAck(NetworkStream stream)
         {
             try
